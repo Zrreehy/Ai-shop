@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { LLMClient, Config, HeaderUtils, type Message } from 'coze-coding-dev-sdk';
 
 export async function POST(request: NextRequest) {
   try {
     const { messages, context } = await request.json();
-    const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
 
-    const config = new Config();
-    const client = new LLMClient(config, customHeaders);
+    const apiKey = process.env.COZE_WORKLOAD_IDENTITY_API_KEY;
+    const baseUrl = process.env.COZE_INTEGRATION_MODEL_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3';
+
+    if (!apiKey) {
+      console.error('AI Chat error: COZE_WORKLOAD_IDENTITY_API_KEY is not set');
+      return NextResponse.json(
+        { error: 'API Key 未配置' },
+        { status: 500 }
+      );
+    }
 
     // 构建系统提示词，包含商品信息
     const systemPrompt = `你是智选商城的 AI 客服助手，一个专业、友好、智能的购物顾问。
@@ -36,7 +42,7 @@ ${context?.products?.map((p: { name: string; price: number; category: string; fe
 ## 当前用户问题
 请根据用户的输入，提供专业、有帮助的回答。`;
 
-    const chatMessages: Message[] = [
+    const chatMessages = [
       { role: 'system', content: systemPrompt },
       ...messages.map((msg: { role: string; content: string }) => ({
         role: msg.role,
@@ -44,23 +50,71 @@ ${context?.products?.map((p: { name: string; price: number; category: string; fe
       })),
     ];
 
-    // 调用 LLM
-    const stream = client.stream(chatMessages, {
-      model: 'doubao-seed-2-0-lite-260215',
-      temperature: 0.7,
+    // 直接调用火山引擎方舟 API（兼容 OpenAI 格式）
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'doubao-seed-2-0-lite-260215',
+        messages: chatMessages,
+        temperature: 0.7,
+        stream: true,
+      }),
     });
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('AI Chat API error:', response.status, errorText);
+      return NextResponse.json(
+        { error: `AI 服务调用失败: ${response.status}` },
+        { status: 500 }
+      );
+    }
+
+    // 处理流式响应
+    const reader = response.body?.getReader();
+    if (!reader) {
+      return NextResponse.json(
+        { error: '无法读取响应流' },
+        { status: 500 }
+      );
+    }
+
     const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of stream) {
-            if (chunk.content) {
-              controller.enqueue(encoder.encode(chunk.content.toString()));
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+                try {
+                  const parsed = JSON.parse(data);
+                  const content = parsed.choices?.[0]?.delta?.content;
+                  if (content) {
+                    controller.enqueue(encoder.encode(content));
+                  }
+                } catch (e) {
+                  // 忽略解析错误
+                }
+              }
             }
           }
           controller.close();
         } catch (error) {
+          console.error('Stream error:', error);
           controller.error(error);
         }
       },
