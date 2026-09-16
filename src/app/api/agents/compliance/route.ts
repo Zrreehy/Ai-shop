@@ -1,14 +1,11 @@
 import { NextRequest } from "next/server";
-import { LLMClient, Config, HeaderUtils, type Message } from "coze-coding-dev-sdk";
+import { createLLMStream, createSSEResponse } from "@/lib/llm-stream";
 
 export async function POST(request: NextRequest) {
-  const { listingText, platform } = await request.json();
-  const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
+  try {
+    const { listingText, platform } = await request.json();
 
-  const config = new Config();
-  const client = new LLMClient(config, customHeaders);
-
-  const systemPrompt = `你是一位电商合规审核专家，精通各平台（淘宝、京东、抖音等）的广告法和商品发布规范。
+    const systemPrompt = `你是一位电商合规审核专家，精通各平台（淘宝、京东、抖音等）的广告法和商品发布规范。
 
 你的任务是审核商品Listing文案，检测以下违规风险：
 
@@ -34,41 +31,23 @@ export async function POST(request: NextRequest) {
   "summary": "整体审核结论"
 }`;
 
-  const userMessage = `请审核以下${platform || "淘宝"}商品Listing文案的合规性：
+    const userMessage = `请审核以下${platform || "淘宝"}商品Listing文案的合规性：
 
 ${listingText}`;
 
-  const messages: Message[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ];
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ];
 
-  const stream = client.stream(messages, {
-    model: "doubao-seed-2-0-lite-260215",
-    temperature: 0.3,
-  });
+    const stream = await createLLMStream(messages, {
+      model: "doubao-seed-2-0-lite-260215",
+      temperature: 0.3,
+    });
 
-  const encoder = new TextEncoder();
-  const readable = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of stream) {
-          if (chunk.content) {
-            controller.enqueue(encoder.encode(chunk.content.toString()));
-          }
-        }
-        controller.close();
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  });
-
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+    return createSSEResponse(stream);
+  } catch (error) {
+    console.error("合规自检失败：", error);
+    return Response.json({ error: "生成失败：" + String(error) }, { status: 500 });
+  }
 }

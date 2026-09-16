@@ -1,32 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { LLMClient, Config, HeaderUtils, type Message } from 'coze-coding-dev-sdk';
+import { callLLM } from '@/lib/llm-stream';
 import { mockAfterSalesOrders, mockAfterSalesRules, mockAfterSalesTickets, mockReviews, type AfterSalesOrder, type AfterSalesRule, type AfterSalesTicket, type ReviewItem } from '@/lib/data/after-sales';
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const action = body.action;
-    const customHeaders = HeaderUtils.extractForwardHeaders(req.headers);
-    const config = new Config();
-    const client = new LLMClient(config, customHeaders);
 
     if (action === 'generate-reply') {
       const { issueType, productName } = body;
       const systemPrompt = `你是电商售后客服专家，请针对 ${productName} 商品的 "${issueType}" 问题，生成一段专业友好的回复话术，包含：安抚、致歉、解决方案三个部分。字数控制在 150-250 字。`;
       const userPrompt = `商品：${productName}，问题：${issueType}`;
-      const messages: Message[] = [
+      const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ];
-      const stream = client.stream(messages, {
+      const result = await callLLM(messages, {
         model: 'doubao-seed-2-0-lite-260215',
         temperature: 0.7,
       });
-      let result = '';
-      for await (const chunk of stream) {
-        if (chunk.content) result += chunk.content.toString();
-      }
-      return NextResponse.json({ success: true, data: { reply: result.trim() } });
+      return NextResponse.json({ success: true, data: { reply: result } });
     }
 
     if (action === 'detect-problem') {
@@ -84,19 +77,15 @@ export async function POST(req: NextRequest) {
     if (action === 'generate-review-reply') {
       const { reviewContent, reviewRating } = body;
       const systemPrompt = `你是电商客服专家，收到一条 ${reviewRating} 分评价："${reviewContent}"。请生成一条专业礼貌的回复，感谢用户反馈，表达改进诚意，字数 80-150 字。`;
-      const messages: Message[] = [
+      const messages = [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: reviewContent },
       ];
-      const stream = client.stream(messages, {
+      const result = await callLLM(messages, {
         model: 'doubao-seed-2-0-lite-260215',
         temperature: 0.7,
       });
-      let result = '';
-      for await (const chunk of stream) {
-        if (chunk.content) result += chunk.content.toString();
-      }
-      return NextResponse.json({ success: true, data: { reply: result.trim() } });
+      return NextResponse.json({ success: true, data: { reply: result } });
     }
 
     if (action === 'audit-check') {
@@ -113,6 +102,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: false, error: 'unknown action' }, { status: 400 });
   } catch (e) {
+    console.error('售后接口异常：', e);
     return NextResponse.json({ success: false, error: String(e) }, { status: 500 });
   }
 }

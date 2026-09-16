@@ -1,14 +1,11 @@
 import { NextRequest } from "next/server";
-import { LLMClient, Config, HeaderUtils, type Message } from "coze-coding-dev-sdk";
+import { createLLMStream, createSSEResponse } from "@/lib/llm-stream";
 
 export async function POST(request: NextRequest) {
-  const { productName, category, existingKeywords } = await request.json();
-  const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
+  try {
+    const { productName, category, existingKeywords } = await request.json();
 
-  const config = new Config();
-  const client = new LLMClient(config, customHeaders);
-
-  const systemPrompt = `你是一位电商关键词优化专家，精通淘宝、京东等平台的搜索算法。
+    const systemPrompt = `你是一位电商关键词优化专家，精通淘宝、京东等平台的搜索算法。
 
 你的任务是：
 1. 根据商品信息，挖掘相关关键词
@@ -26,43 +23,25 @@ export async function POST(request: NextRequest) {
   "embeddingStrategy": "关键词嵌入策略说明"
 }`;
 
-  const userMessage = `请为以下商品进行关键词挖掘和分析：
+    const userMessage = `请为以下商品进行关键词挖掘和分析：
 
 商品名称：${productName}
 商品分类：${category}
 已有关键词：${existingKeywords || "无"}`;
 
-  const messages: Message[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ];
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ];
 
-  const stream = client.stream(messages, {
-    model: "doubao-seed-2-0-lite-260215",
-    temperature: 0.5,
-  });
+    const stream = await createLLMStream(messages, {
+      model: "doubao-seed-2-0-lite-260215",
+      temperature: 0.5,
+    });
 
-  const encoder = new TextEncoder();
-  const readable = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of stream) {
-          if (chunk.content) {
-            controller.enqueue(encoder.encode(chunk.content.toString()));
-          }
-        }
-        controller.close();
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  });
-
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+    return createSSEResponse(stream);
+  } catch (error) {
+    console.error("关键词挖掘失败：", error);
+    return Response.json({ error: "生成失败：" + String(error) }, { status: 500 });
+  }
 }

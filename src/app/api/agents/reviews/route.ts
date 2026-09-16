@@ -1,14 +1,11 @@
 import { NextRequest } from "next/server";
-import { LLMClient, Config, HeaderUtils, type Message } from "coze-coding-dev-sdk";
+import { createLLMStream, createSSEResponse } from "@/lib/llm-stream";
 
 export async function POST(request: NextRequest) {
-  const { reviews, productName } = await request.json();
-  const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
+  try {
+    const { reviews, productName } = await request.json();
 
-  const config = new Config();
-  const client = new LLMClient(config, customHeaders);
-
-  const systemPrompt = `你是一位电商评论分析专家，擅长从买家评论中提取有价值的信息来优化商品Listing。
+    const systemPrompt = `你是一位电商评论分析专家，擅长从买家评论中提取有价值的信息来优化商品Listing。
 
 你的任务是分析商品评论，输出以下洞察：
 
@@ -29,41 +26,23 @@ export async function POST(request: NextRequest) {
   "sentimentScore": 75
 }`;
 
-  const userMessage = `请分析以下商品"${productName}"的买家评论：
+    const userMessage = `请分析以下商品"${productName}"的买家评论：
 
 ${reviews}`;
 
-  const messages: Message[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userMessage },
-  ];
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ];
 
-  const stream = client.stream(messages, {
-    model: "doubao-seed-2-0-lite-260215",
-    temperature: 0.5,
-  });
+    const stream = await createLLMStream(messages, {
+      model: "doubao-seed-2-0-lite-260215",
+      temperature: 0.5,
+    });
 
-  const encoder = new TextEncoder();
-  const readable = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of stream) {
-          if (chunk.content) {
-            controller.enqueue(encoder.encode(chunk.content.toString()));
-          }
-        }
-        controller.close();
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  });
-
-  return new Response(readable, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    },
-  });
+    return createSSEResponse(stream);
+  } catch (error) {
+    console.error("评论分析失败：", error);
+    return Response.json({ error: "生成失败：" + String(error) }, { status: 500 });
+  }
 }

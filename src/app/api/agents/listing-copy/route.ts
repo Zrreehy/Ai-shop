@@ -1,12 +1,9 @@
 import { NextRequest } from "next/server";
-import { LLMClient, Config, HeaderUtils, type Message } from "coze-coding-dev-sdk";
+import { createLLMStream, createSSEResponse } from "@/lib/llm-stream";
 
 export async function POST(request: NextRequest) {
   try {
     const { productName, category, features, targetPlatform, keywords } = await request.json();
-    const customHeaders = HeaderUtils.extractForwardHeaders(request.headers);
-    const config = new Config();
-    const client = new LLMClient(config, customHeaders);
 
     const systemPrompt = `你是一位资深电商运营专家，擅长撰写高转化率的电商商品文案（Listing）。你精通淘宝、京东等平台的搜索算法和文案规范。
 你的任务是根据用户提供的商品信息，生成完整的Listing文案方案，包括：
@@ -42,40 +39,17 @@ export async function POST(request: NextRequest) {
 目标关键词：${keywords || "自动提取"}
 目标平台：${targetPlatform || "淘宝"}`;
 
-    const messages: Message[] = [
+    const messages = [
       { role: "system", content: systemPrompt },
       { role: "user", content: userMessage },
     ];
 
-    const stream = client.stream(messages, {
+    const stream = await createLLMStream(messages, {
       model: "doubao-seed-2-0-lite-260215",
       temperature: 0.7,
     });
 
-    const encoder = new TextEncoder();
-    const readable = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const chunk of stream) {
-            if (chunk.content) {
-              controller.enqueue(encoder.encode(chunk.content.toString()));
-            }
-          }
-          controller.close();
-        } catch (error) {
-          console.error("流式读取出错：", error);
-          controller.error(error);
-        }
-      },
-    });
-
-    return new Response(readable, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
+    return createSSEResponse(stream);
   } catch (globalErr) {
     console.error("接口全局异常：", globalErr);
     return Response.json({ error: "生成失败：" + String(globalErr) }, { status: 500 });
